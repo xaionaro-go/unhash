@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 )
 
 func fatalIfError(err error) {
@@ -28,6 +29,24 @@ func fatalSyntax() {
 func found(b []byte) {
 	fmt.Println(b)
 	os.Exit(0)
+}
+
+func estimateTime(timeSpent time.Duration, curPos, totalLength uint) time.Duration {
+	// The further we go, the faster it will be (linearly), so:
+	goneThrough := float64(curPos) / float64(totalLength)
+
+	// in the end: T = C * totalLength * (totalLength-1) / 2
+	// in the progress: T = C * totalLength * (totalLength - 1) * goneThrough -
+	//                      - totalLength * goneThrough * (totalLength - 1) * goneThrough / 2
+	// simplify: T = C * (totalLength * (totalLength - 1)) * goneThrough * (1 - gnomeThrough / 2)
+	// Getting "C":
+	// C = T / ( (totalLength * (totalLength - 1)) * goneThrough * (1 - gnomeThrough / 2) )
+
+	t := float64(timeSpent.Nanoseconds())
+	l := float64(totalLength)
+	g := goneThrough
+	coefficient := t / ( (l * (l-1)) * g * (1 - g / 2) )
+	return time.Nanosecond * time.Duration(coefficient * l * (l - 1) / 2)
 }
 
 func main() {
@@ -54,6 +73,7 @@ func main() {
 	fileData, err := ioutil.ReadFile(flag.Arg(1))
 	fatalIfError(err)
 
+	startedAt := time.Now()
 	curPos := 0
 	for curPos < len(fileData) {
 		var wg sync.WaitGroup
@@ -87,7 +107,13 @@ func main() {
 
 		curPos += numTasks
 		wg.Wait()
-		fmt.Printf(" %d/%d\n", curPos, len(fileData))
+
+		timeSpent := time.Since(startedAt)
+
+		fmt.Printf(" %d/%d: (%v / %v)\n",
+			curPos, len(fileData),
+			timeSpent, estimateTime(timeSpent, uint(curPos), uint(len(fileData))),
+		)
 	}
 
 	fmt.Println("did not find :(")
