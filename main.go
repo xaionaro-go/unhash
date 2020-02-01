@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 )
@@ -57,28 +58,28 @@ func main() {
 	for curPos < len(fileData) {
 		var wg sync.WaitGroup
 
-		numTasks := 256
-		if len(fileData) - curPos < 256 {
+		numTasks := runtime.NumCPU()
+		if len(fileData)-curPos < numTasks {
 			numTasks = len(fileData) - curPos
 		}
 		wg.Add(numTasks)
-		for i:=0; i<numTasks; i++ {
-			go func(startPos int){
+		for i := 0; i < numTasks; i++ {
+			go func(startPos int) {
 				defer fmt.Print("E")
 				defer wg.Done()
 
 				hashInstance := sha1.New()
 				for idx, b := range fileData[startPos:] {
-					if idx+1 & 0xfffff == 0xfffff {
+					if (idx+1)&0xfffff == 0xfffff {
 						fmt.Print(".")
 					}
 					hashInstance.Write([]byte{b})
 					hashValue := hashInstance.Sum(nil)
 					if bytes.Compare(hashValue, neededHash) == 0 {
-						found(fileData[startPos:startPos+idx+1])
+						found(fileData[startPos : startPos+idx+1])
 					}
 					if bytes.Compare(hashValue, neededHashReversed) == 0 {
-						found(fileData[startPos:startPos+idx+1])
+						found(fileData[startPos : startPos+idx+1])
 					}
 				}
 			}(curPos + i)
