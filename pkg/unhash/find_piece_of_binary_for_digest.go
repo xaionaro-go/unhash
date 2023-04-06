@@ -347,7 +347,7 @@ func (f *pieceFinder) executeSubWorker(
 
 		startIteratePos := startHashPos
 		if skipShorterThan > 0 {
-			if startHashPos+skipShorterThan >= endPos {
+			if startHashPos+skipShorterThan > endPos {
 				break
 			}
 			hashInstance.Write(binaryBytes[startHashPos : startHashPos+skipShorterThan])
