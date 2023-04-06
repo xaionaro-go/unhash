@@ -272,6 +272,9 @@ func (f *pieceFinder) executeWorker(
 	}
 
 	iterationsPerJob := ((uint(len(f.binaryBytes)) + (rangeCfg.StartPosStep - 1)) / rangeCfg.StartPosStep) / numJobs
+	if iterationsPerJob == 0 {
+		iterationsPerJob = 1
+	}
 
 	jobs := make([]subWorkerJob, 0, numJobs)
 	curStartStartPos := uint(0)
@@ -342,7 +345,7 @@ func (f *pieceFinder) executeSubWorker(
 		hashInstance.Reset()
 		endPos := blobSize
 		if skipLongerThan > 0 {
-			endPos = min(endPos, startHashPos+skipLongerThan+iterationStep)
+			endPos = min(endPos, startHashPos+skipLongerThan+(iterationStep-1))
 		}
 
 		startIteratePos := startHashPos
