@@ -39,6 +39,7 @@ func syntaxFatalf(format string, args ...any) {
 func main() {
 	logLevel := logger.LevelWarning
 	flag.Var(&logLevel, "log-level", "")
+	expectSizeFlag := flag.Uint("expect-size", 0, "")
 	netPprofFlag := flag.String("net-pprof", "", "")
 	flag.Parse()
 
@@ -78,13 +79,18 @@ func main() {
 	binaryBytes, err := fileToBytes(binaryFilePath)
 	fatalIfError(ctx, err)
 
+	var settings *unhash.SearchInBinaryBlobSettings
+	if *expectSizeFlag != 0 {
+		settings = unhash.SearchInBinaryBlobSettingsForSize(binaryBytes, hasherFactory(), *expectSizeFlag)
+	}
+
 	startPos, endPos := uint(0), uint(0)
 	found, checkCount, err := unhash.FindPieceOfBinaryForDigest(
 		ctx,
 		unhash.FindDigestSourceAnyDigest(ctx, &startPos, &endPos, digest),
 		binaryBytes,
 		hasherFactory,
-		nil,
+		settings,
 	)
 	fatalIfError(ctx, err)
 

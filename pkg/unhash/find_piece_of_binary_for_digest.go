@@ -27,25 +27,66 @@ type SearchInBinaryBlobRange struct {
 	SkipLongerThan  uint
 }
 
-var defaultSearchInBinaryBlobSettings = &SearchInBinaryBlobSettings{
-	Ranges: []SearchInBinaryBlobRange{
-		{1, 1, 0, 0},
-		{1, 1, 0, 128},
-		{1, 1, 128, 1024},
-		{1, 1, 1024, 1024 * 1024},
-		{1, 1, 1024 * 1024, 0},
-		{4, 4, 0, 64},
-		{4, 4, 64, 1024 * 1024},
-		{8, 8, 1024 * 1024, 64 * 1024 * 1024},
-		{16, 16, 1024 * 1024, 64 * 1024 * 1024},
-		{0x100, 0x100, 1024 * 1024, 64 * 1024 * 1024},
-		{16, 16, 64 * 1024 * 1024, 1024 * 1024 * 1024},
-		{0x100, 0x100, 64 * 1024 * 1024, 0},
-		{0x1000, 0x1000, 0, 0},
-		{0x10000, 0x10000, 0, 0},
-		{0x100000, 0x100000, 0, 0},
-		{0x1000000, 0x1000000, 0, 0},
-	},
+func SearchInBinaryBlobSettingsForSize(
+	blob []byte,
+	hasher hash.Hash,
+	dataSize uint,
+) *SearchInBinaryBlobSettings {
+	return &SearchInBinaryBlobSettings{
+		Ranges: []SearchInBinaryBlobRange{
+			{1, dataSize, dataSize, dataSize},
+			{4, dataSize, dataSize, dataSize},
+			{16, dataSize, dataSize, dataSize},
+			{64, dataSize, dataSize, dataSize},
+			{256, dataSize, dataSize, dataSize},
+			{1024, dataSize, dataSize, dataSize},
+			{1 << 12, dataSize, dataSize, dataSize},
+			{1 << 14, dataSize, dataSize, dataSize},
+			{1 << 16, dataSize, dataSize, dataSize},
+			{1 << 18, dataSize, dataSize, dataSize},
+			{1 << 20, dataSize, dataSize, dataSize},
+		},
+	}
+}
+
+func DefaultSearchInBinaryBlobSettings(
+	blob []byte,
+	hasher hash.Hash,
+) *SearchInBinaryBlobSettings {
+	hs := uint(hasher.Size())
+	bs := uint(hasher.BlockSize())
+	return &SearchInBinaryBlobSettings{
+		Ranges: []SearchInBinaryBlobRange{
+			{1, bs, bs, 0},
+			{1, bs, bs, max(bs, 0x100)},
+			{1, 1, 0, 0},
+			{1, 1, 0, 128},
+			{1, 1, 128, 1024},
+			{1, 1, 1024, 1024 * 1024},
+			{1, 1, 1024 * 1024, 8 * 1024 * 1024},
+			{1, 1, 8 * 1024 * 1024, 0},
+			{4, 4, 0, 64},
+			{4, 4, 64, 1024 * 1024},
+			{8, 8, 1024 * 1024, 4 * 1024 * 1024},
+			{4, bs, bs, bs},
+			{4, hs, hs, hs},
+			{16, 16, 0, 64},
+			{16, 16, 64, 1024 * 1024},
+			{16, 16, 1024 * 1024, 4 * 1024 * 1024},
+			{0x100, 1, 0, min(bs, 0x100)},
+			{0x100, min(bs, 0x100), min(bs, 0x100), 0x1000},
+			{0x100, min(bs, 0x100), 0x1000, 1024 * 1024},
+			{0x100, min(bs, 0x100), 1024 * 1024, 0},
+			{0x1000, bs, bs, 0x1000},
+			{0x1000, bs, 0x1000, 0},
+			{0x10000, bs, bs, 0x10000},
+			{0x10000, bs, 0x10000, 0},
+			{0x100000, bs, bs, 0x100000},
+			{0x100000, bs, 0x100000, 0},
+			{0x1000000, bs, bs, 0x1000000},
+			{0x1000000, bs, 0x1000000, 0},
+		},
+	}
 }
 
 /*func estimateTime(timeSpent time.Duration, curPos, totalLength uint) time.Duration {
@@ -87,7 +128,7 @@ func newPieceFinder(
 	settings *SearchInBinaryBlobSettings,
 ) (*pieceFinder, error) {
 	if settings == nil {
-		settings = defaultSearchInBinaryBlobSettings
+		settings = DefaultSearchInBinaryBlobSettings(binaryBytes, hasherFactory())
 	}
 
 	for idx, r := range settings.Ranges {
@@ -146,7 +187,7 @@ func executeWorkers[job any, result any, sharedData any](
 	ctx context.Context,
 	sem *semaphore.Weighted,
 	jobs []job,
-	workerExec func(context.Context, job, sharedData) result,
+	workerExec func(context.Context, *job, sharedData) result,
 	aggregateResults func(results <-chan result) result,
 	shared sharedData,
 ) result {
@@ -170,7 +211,7 @@ func executeWorkers[job any, result any, sharedData any](
 				defer sem.Release(1)
 			}
 			ctx := beltctx.WithField(ctx, "job", j)
-			workerResultCh <- workerExec(ctx, j, shared)
+			workerResultCh <- workerExec(ctx, &j, shared)
 		}(j)
 	}
 
@@ -210,7 +251,7 @@ type subWorkerJob struct {
 
 func (f *pieceFinder) executeWorker(
 	ctx context.Context,
-	cfg SearchInBinaryBlobRange,
+	rangeCfg *SearchInBinaryBlobRange,
 	haveFound *atomic.Uint32,
 ) (result pieceFinderWorkerResult) {
 	logger.FromCtx(ctx).Debugf("started bruteforce")
@@ -223,19 +264,19 @@ func (f *pieceFinder) executeWorker(
 	}
 
 	numJobs := uint(runtime.NumCPU())
-	if uint(len(f.binaryBytes))/uint(cfg.IterationStep) < numJobs {
-		numJobs = uint(len(f.binaryBytes)) / uint(cfg.IterationStep)
+	if uint(len(f.binaryBytes))/uint(rangeCfg.StartPosStep) < numJobs {
+		numJobs = uint(len(f.binaryBytes)) / uint(rangeCfg.StartPosStep)
 		if numJobs == 0 {
 			numJobs = 1
 		}
 	}
 
-	iterationsPerJob := ((uint(len(f.binaryBytes)) + (cfg.IterationStep - 1)) / cfg.IterationStep) / numJobs
+	iterationsPerJob := ((uint(len(f.binaryBytes)) + (rangeCfg.StartPosStep - 1)) / rangeCfg.StartPosStep) / numJobs
 
 	jobs := make([]subWorkerJob, 0, numJobs)
 	curStartStartPos := uint(0)
-	for jobID := uint(0); jobID < numJobs; jobID++ {
-		curEndStartPos := curStartStartPos + iterationsPerJob*cfg.IterationStep
+	for {
+		curEndStartPos := curStartStartPos + iterationsPerJob*rangeCfg.StartPosStep
 		if curEndStartPos > uint(len(f.binaryBytes)) {
 			curEndStartPos = uint(len(f.binaryBytes))
 		}
@@ -256,8 +297,8 @@ func (f *pieceFinder) executeWorker(
 		f.executeSubWorker,
 		f.aggregateWorkerResults,
 		subWorkerSharedData{
-			HaveFound: haveFound,
-			Config:    cfg,
+			HaveFound:   haveFound,
+			RangeConfig: rangeCfg,
 
 			IsTracingEnabled: logger.FromCtx(ctx).Level() >= logger.LevelTrace,
 		},
@@ -265,8 +306,8 @@ func (f *pieceFinder) executeWorker(
 }
 
 type subWorkerSharedData struct {
-	HaveFound *atomic.Uint32
-	Config    SearchInBinaryBlobRange
+	HaveFound   *atomic.Uint32
+	RangeConfig *SearchInBinaryBlobRange
 
 	// debug:
 	IsTracingEnabled bool
@@ -274,7 +315,7 @@ type subWorkerSharedData struct {
 
 func (f *pieceFinder) executeSubWorker(
 	ctx context.Context,
-	job subWorkerJob,
+	job *subWorkerJob,
 	shared subWorkerSharedData,
 ) (result pieceFinderWorkerResult) {
 	if shared.IsTracingEnabled {
@@ -284,19 +325,22 @@ func (f *pieceFinder) executeSubWorker(
 		}()
 	}
 
+	rangeCfg := shared.RangeConfig
 	haveFound := shared.HaveFound
 	binaryBytes := f.binaryBytes
-	iterationStep := shared.Config.IterationStep
-	skipShorterThan := shared.Config.SkipShorterThan
-	skipLongerThan := shared.Config.SkipLongerThan
+	blobSize := uint(len(binaryBytes))
+	startPosStep := rangeCfg.StartPosStep
+	iterationStep := rangeCfg.IterationStep
+	skipShorterThan := rangeCfg.SkipShorterThan
+	skipLongerThan := rangeCfg.SkipLongerThan
 	foundFunc := f.foundFunc
 
 	hashInstance := f.hasherFactory()
 	hashValue := make([]byte, hashInstance.Size())
 
-	for startHashPos := job.startStartPos; startHashPos < job.startEndPos; startHashPos += iterationStep {
+	for startHashPos := job.startStartPos; startHashPos < job.startEndPos; startHashPos += startPosStep {
 		hashInstance.Reset()
-		endPos := uint(len(f.binaryBytes))
+		endPos := blobSize
 		if skipLongerThan > 0 {
 			endPos = min(endPos, startHashPos+skipLongerThan+iterationStep)
 		}
@@ -308,6 +352,16 @@ func (f *pieceFinder) executeSubWorker(
 			}
 			hashInstance.Write(binaryBytes[startHashPos : startHashPos+skipShorterThan])
 			startIteratePos += skipShorterThan
+			hashValue = hashValue[:0]
+			hashValue = hashInstance.Sum(hashValue)
+			if shared.IsTracingEnabled {
+				logger.FromCtx(ctx).Tracef("%X-%X: %X", startHashPos, startIteratePos, hashValue)
+			}
+			result.CheckCount++
+			if foundFunc(ctx, hashValue, startHashPos, startIteratePos) {
+				haveFound.Store(1)
+				return
+			}
 		}
 		if shared.IsTracingEnabled {
 			ctx = beltctx.WithFields(ctx, field.Map[uint]{
@@ -328,12 +382,11 @@ func (f *pieceFinder) executeSubWorker(
 			if localEndIdx > endPos {
 				break
 			}
-
 			hashInstance.Write(binaryBytes[idx:localEndIdx])
 			hashValue = hashValue[:0]
 			hashValue = hashInstance.Sum(hashValue)
 			if shared.IsTracingEnabled {
-				logger.FromCtx(ctx).Tracef("%X: %X", idx, hashValue)
+				logger.FromCtx(ctx).Tracef("%X-%X: %X", startHashPos, localEndIdx, hashValue)
 			}
 			result.CheckCount++
 			if foundFunc(ctx, hashValue, startHashPos, localEndIdx) {
@@ -353,4 +406,14 @@ func min[T constraints.Integer](v0 T, vs ...T) T {
 		}
 	}
 	return vMin
+}
+
+func max[T constraints.Integer](v0 T, vs ...T) T {
+	vMax := v0
+	for _, vCmp := range vs {
+		if vCmp > vMax {
+			vMax = vCmp
+		}
+	}
+	return vMax
 }

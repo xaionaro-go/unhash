@@ -12,6 +12,11 @@ import (
 )
 
 func BenchmarkFindPieceOfBinaryForDigest(b *testing.B) {
+	blob := make([]byte, 1<<20)
+	rng := rand.New(rand.NewSource(0))
+	_, err := rng.Read(blob)
+	require.NoError(b, err)
+
 	for _, blobSize := range []uint{1 << 10, 1 << 20} {
 		for _, offset := range []uint{0, 1, 1 << 8, 312321, 1 << 10, 1 << 16, 1 << 19} {
 			for _, size := range []uint{1, 1 << 8, 1 << 10, 1 << 16} {
@@ -26,7 +31,7 @@ func BenchmarkFindPieceOfBinaryForDigest(b *testing.B) {
 								b.Run(hashFuncName, func(b *testing.B) {
 									benchmarkFindPieceOfBinaryForDigest(
 										b,
-										blobSize, offset, size,
+										blob, blobSize, offset, size,
 										hashFuncName,
 									)
 								})
@@ -41,13 +46,11 @@ func BenchmarkFindPieceOfBinaryForDigest(b *testing.B) {
 
 func benchmarkFindPieceOfBinaryForDigest(
 	b *testing.B,
+	fullBlob []byte,
 	blobSize, offset, size uint,
 	hashFuncName string,
 ) {
-	blob := make([]byte, blobSize)
-	rng := rand.New(rand.NewSource(0))
-	_, err := rng.Read(blob)
-	require.NoError(b, err)
+	blob := fullBlob[:blobSize]
 
 	var hasherFactory HasherFactory
 	switch hashFuncName {
@@ -62,16 +65,16 @@ func benchmarkFindPieceOfBinaryForDigest(
 	var digest Digest
 	{
 		hasher := hasherFactory()
-		_, err = hasher.Write(blob[offset : offset+size])
+		_, err := hasher.Write(blob[offset : offset+size])
 		require.NoError(b, err)
 		digest = hasher.Sum(nil)
 	}
 
 	ctx := context.Background()
 
-	var startPos, endPos uint
 	b.ResetTimer()
 	b.ReportAllocs()
+	var startPos, endPos uint
 	for i := 0; i < b.N; i++ {
 		found, checkCount, err := FindPieceOfBinaryForDigest(
 			ctx,
