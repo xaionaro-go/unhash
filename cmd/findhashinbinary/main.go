@@ -115,14 +115,13 @@ func main() {
 func fileToBytes(filePath string) ([]byte, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf(`unable to open the image-file "%v": %w`,
+		return nil, fmt.Errorf(`unable to open the file "%s": %w`,
 			filePath, err)
 	}
 	defer file.Close() // it was a read-only Open(), so we don't check the Close()
 
-	// To consume less memory we use mmap() instead of reading the image
-	// into the memory. However these bytes are also parsed by
-	// linuxboot/fiano/pkg/uefi which consumes a lot of memory anyway :(
+	// To consume less memory we use mmap() instead of reading the file content
+	// into the memory.
 	//
 	// See "man 2 mmap".
 	contents, err := mmap.Map(file, mmap.RDONLY, 0)
@@ -133,7 +132,7 @@ func fileToBytes(filePath string) ([]byte, error) {
 	// An error? OK, let's try the usual way to read data:
 	contents, err = io.ReadAll(file)
 	if err != nil {
-		return nil, fmt.Errorf(`unable to access data of the image-file "%v": %w`,
+		return nil, fmt.Errorf(`unable to read the file "%s": %w`,
 			filePath, err)
 	}
 	return contents, nil
