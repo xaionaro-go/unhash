@@ -17,7 +17,8 @@ import (
 )
 
 type SearchInBinaryBlobSettings struct {
-	Ranges []SearchInBinaryBlobRange
+	Ranges     []SearchInBinaryBlobRange
+	MaxGuesses uint64
 }
 
 type SearchInBinaryBlobRange struct {
@@ -163,14 +164,28 @@ func FindPieceOfBinaryForDigest(
 	return pieceFinder.Execute(ctx)
 }
 
-func (f *pieceFinder) Execute(
-	ctx context.Context,
-) (bool, uint64, error) {
-	// haveFound is a global signaler if somebody already
+type findStatus uint32
+
+const (
+	findStatusNotFound = findStatus(iota)
+	findStatusFound
+	findStatusCancelled
+)
+
+type pieceFinderWorkerShared struct {
+	GuessCount atomic.Uint64
+
+	// Status is a global signaler if somebody already
 	// found a solution and everybody else should stop wasting CPU.
 	//
 	// It is preferred over using Context signaling due to performance reasons.
-	haveFound := atomic.Uint32{}
+	Status atomic.Uint32
+}
+
+func (f *pieceFinder) Execute(
+	ctx context.Context,
+) (bool, uint64, error) {
+	shared := pieceFinderWorkerShared{}
 
 	result := executeWorkers(
 		ctx,
@@ -178,9 +193,9 @@ func (f *pieceFinder) Execute(
 		f.settings.Ranges,
 		f.executeWorker,
 		f.aggregateWorkerResults,
-		&haveFound,
+		&shared,
 	)
-	return haveFound.Load() != 0, result.CheckCount, result.Error
+	return findStatus(shared.Status.Load()) == findStatusFound, shared.GuessCount.Load(), result.Error
 }
 
 func executeWorkers[job any, result any, sharedData any](
@@ -225,8 +240,7 @@ func executeWorkers[job any, result any, sharedData any](
 }
 
 type pieceFinderWorkerResult struct {
-	CheckCount uint64
-	Error      error
+	Error error
 }
 
 func (f *pieceFinder) aggregateWorkerResults(
@@ -236,7 +250,6 @@ func (f *pieceFinder) aggregateWorkerResults(
 
 	var errors *multierror.Error
 	for r := range resultChan {
-		result.CheckCount += r.CheckCount
 		errors = multierror.Append(errors, r.Error)
 	}
 
@@ -252,14 +265,14 @@ type subWorkerJob struct {
 func (f *pieceFinder) executeWorker(
 	ctx context.Context,
 	rangeCfg *SearchInBinaryBlobRange,
-	haveFound *atomic.Uint32,
+	shared *pieceFinderWorkerShared,
 ) (result pieceFinderWorkerResult) {
 	logger.FromCtx(ctx).Debugf("started bruteforce")
 	defer func() {
 		logger.FromCtx(ctx).Debugf("ended bruteforce; result: %#+v", result)
 	}()
 
-	if haveFound.Load() != 0 {
+	if shared.Status.Load() != 0 {
 		return
 	}
 
@@ -300,7 +313,7 @@ func (f *pieceFinder) executeWorker(
 		f.executeSubWorker,
 		f.aggregateWorkerResults,
 		subWorkerSharedData{
-			HaveFound:   haveFound,
+			Global:      shared,
 			RangeConfig: rangeCfg,
 
 			IsTracingEnabled: logger.FromCtx(ctx).Level() >= logger.LevelTrace,
@@ -309,7 +322,7 @@ func (f *pieceFinder) executeWorker(
 }
 
 type subWorkerSharedData struct {
-	HaveFound   *atomic.Uint32
+	Global      *pieceFinderWorkerShared
 	RangeConfig *SearchInBinaryBlobRange
 
 	// debug:
@@ -329,7 +342,9 @@ func (f *pieceFinder) executeSubWorker(
 	}
 
 	rangeCfg := shared.RangeConfig
-	haveFound := shared.HaveFound
+	status := &shared.Global.Status
+	guessCount := &shared.Global.GuessCount
+	guessLimit := f.settings.MaxGuesses
 	binaryBytes := f.binaryBytes
 	blobSize := uint(len(binaryBytes))
 	startPosStep := rangeCfg.StartPosStep
@@ -360,9 +375,13 @@ func (f *pieceFinder) executeSubWorker(
 			if shared.IsTracingEnabled {
 				logger.FromCtx(ctx).Tracef("%X-%X: %X", startHashPos, startIteratePos, hashValue)
 			}
-			result.CheckCount++
+
+			if v := guessCount.Add(1); guessLimit != 0 && v >= guessLimit {
+				status.CompareAndSwap(uint32(findStatusNotFound), uint32(findStatusCancelled))
+				return
+			}
 			if foundFunc(ctx, hashValue, startHashPos, startIteratePos) {
-				haveFound.Store(1)
+				status.Store(uint32(findStatusFound))
 				return
 			}
 		}
@@ -377,7 +396,7 @@ func (f *pieceFinder) executeSubWorker(
 		}
 
 		for idx := startIteratePos; ; idx += iterationStep {
-			if haveFound.Load() != 0 {
+			if status.Load() != 0 {
 				return
 			}
 
@@ -391,9 +410,13 @@ func (f *pieceFinder) executeSubWorker(
 			if shared.IsTracingEnabled {
 				logger.FromCtx(ctx).Tracef("%X-%X: %X", startHashPos, localEndIdx, hashValue)
 			}
-			result.CheckCount++
+
+			if v := guessCount.Add(1); guessLimit != 0 && v >= guessLimit {
+				status.CompareAndSwap(uint32(findStatusNotFound), uint32(findStatusCancelled))
+				return
+			}
 			if foundFunc(ctx, hashValue, startHashPos, localEndIdx) {
-				haveFound.Store(1)
+				status.Store(1)
 				return
 			}
 		}
