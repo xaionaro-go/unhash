@@ -50,11 +50,9 @@ func FindDigestSourceAllDigests(
 	}
 
 	digestsCopy := make([]Digest, len(digests))
-	for idx, digest := range digests {
-		copy(digestsCopy[idx], digest)
-	}
-	digestsOrig := digests
-	digests = digestsCopy
+	copy(digestsCopy, digests)
+	digests, digestsOrig := digestsCopy, digests
+
 	return func(ctx context.Context, digest Digest, startPos, endPos uint) bool {
 		for idx, digestCompare := range digests {
 			if !bytes.Equal(digest, digestCompare) {
