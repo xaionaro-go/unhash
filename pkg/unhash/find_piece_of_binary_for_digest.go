@@ -6,7 +6,6 @@ import (
 	"hash"
 	"runtime"
 	"sync"
-	"sync/atomic"
 
 	"github.com/facebookincubator/go-belt/beltctx"
 	"github.com/facebookincubator/go-belt/pkg/field"
@@ -173,13 +172,13 @@ const (
 )
 
 type pieceFinderWorkerShared struct {
-	GuessCount atomic.Uint64
+	GuessCount atomicUint64
 
 	// Status is a global signaler if somebody already
 	// found a solution and everybody else should stop wasting CPU.
 	//
 	// It is preferred over using Context signaling due to performance reasons.
-	Status atomic.Uint32
+	Status atomicUint32
 }
 
 func (f *pieceFinder) Execute(
